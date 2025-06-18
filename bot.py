@@ -1,7 +1,6 @@
 import os
 import re
 import logging
-from datetime import datetime
 from telegram.ext import Application, MessageHandler, filters
 from telegram import Update, MessageEntity
 from telegram.constants import ParseMode
@@ -24,35 +23,13 @@ class BinanceRedPacketBot:
         self.target_channel_id = int(os.getenv('TARGET_CHANNEL_ID'))
         self.admin_user_ids = list(map(int, os.getenv('ADMIN_USER_IDS').split(',')))
         
-        # Regex pattern for Binance Red Packet codes (8 alphanumeric chars)
-        self.red_packet_pattern = re.compile(r'\b[A-Z0-9]{8}\b')
-        
-        # Stats tracking
-        self.codes_forwarded = 0
+        # Improved regex pattern for Binance Red Packet codes
+        self.red_packet_pattern = re.compile(r'\b[A-Z0-9]{8}\b(?!\.)')  # 8 alphanumeric chars, not followed by dot
+        self.codes_forwarded = 0  # Counter for stats
 
-    def extract_red_packet_codes(self, text):
-        """Extract all valid Binance Red Packet codes from text."""
-        return [code for code in self.red_packet_pattern.findall(text) if self.is_valid_code(code)]
-
-    def is_valid_code(self, code):
-        """Validate if the code matches Binance Red Packet format."""
-        # Basic validation - 8 alphanumeric chars, at least 1 letter and 1 number
-        return (len(code) == 8 and 
-                any(c.isalpha() for c in code) and 
-                any(c.isdigit() for c in code))
-
-    def format_codes_message(self, codes, source_message):
-        """Format the codes for forwarding with monospace and header."""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        formatted_codes = '\n'.join(f'`{code}`' for code in codes)
-        
-        return (
-            f"🎉 *Binance Red Packet Codes* 🎉\n"
-            f"📅 *Time:* {timestamp}\n"
-            f"🔗 *Source:* [Original Message]({source_message.link})\n\n"
-            f"{formatted_codes}\n\n"
-            "_Tap on code to copy_"
-        )
+    def is_valid_red_packet(self, code):
+        """Additional validation for Binance Red Packet codes"""
+        return (any(c.isdigit() for c in code) and (any(c.isalpha() for c in code))
 
     async def copy_message(self, update: Update, context):
         """Process messages and forward only red packet codes."""
@@ -60,36 +37,45 @@ class BinanceRedPacketBot:
             message = update.effective_message
             
             # Skip if message is from target channel or doesn't have text
-            if not message or not message.text or message.chat.id == self.target_channel_id:
+            if not message or message.chat.id == self.target_channel_id:
                 return
                 
-            # Skip messages with media, links, or other entities
+            # Skip messages with media or links
             if (message.photo or message.video or message.document or 
                 message.entities and any(e.type in (MessageEntity.URL, MessageEntity.TEXT_LINK) 
                 for e in message.entities)):
                 return
                 
-            # Extract all potential codes from message
-            text = message.text.upper()
-            codes = self.extract_red_packet_codes(text)
+            # Get message text (support both text and caption)
+            text = (message.text or message.caption or "").upper()
             
-            if not codes:
+            # Find all potential codes
+            potential_codes = self.red_packet_pattern.findall(text)
+            valid_codes = [code for code in potential_codes if self.is_valid_red_packet(code)]
+            
+            if not valid_codes:
                 return  # No valid codes found
                 
-            logger.info(f"Found {len(codes)} codes in message from {message.chat.id}")
+            logger.info(f"Found {len(valid_codes)} red packet codes in message from {message.chat.id}")
             
-            # Format and send the message
-            formatted_message = self.format_codes_message(codes, message)
-            await context.bot.send_message(
-                chat_id=self.target_channel_id,
-                text=formatted_message,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                disable_web_page_preview=True
+            # Format codes with monospace for easy copying
+            formatted_codes = "\n".join(f"`{code}`" for code in valid_codes)
+            response_message = (
+                "🎉 Binance Red Packet Codes 🎉\n\n"
+                f"{formatted_codes}\n\n"
+                "_Tap on code to copy_"
             )
             
-            self.codes_forwarded += len(codes)
-            logger.info(f"Forwarded {len(codes)} codes to {self.target_channel_id} (Total: {self.codes_forwarded})")
+            # Send to target channel
+            await context.bot.send_message(
+                chat_id=self.target_channel_id,
+                text=response_message,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
             
+            self.codes_forwarded += len(valid_codes)
+            logger.info(f"Forwarded {len(valid_codes)} codes to {self.target_channel_id}")
+
         except Exception as e:
             logger.error(f"Error processing message: {e}")
 
@@ -109,8 +95,8 @@ class BinanceRedPacketBot:
                 "Available commands:\n"
                 "/start - Check bot status\n"
                 "/help - Show this help message\n\n"
-                "This bot only forwards Binance Red Packet codes (8-character alphanumeric) "
-                "and ignores all other messages with links, media, or usernames."
+                "This bot only forwards Binance Red Packet codes (8-character alphanumeric)\n"
+                "Example: `YVUW2WPE`, `EVL30HOX`, `7NTHLZ02`"
             )
 
     async def error_handler(self, update, context):
